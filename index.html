@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Space Shooter</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+        background: #111;
+        height: 100vh;
+        overflow: hidden;
+        font-family: Arial, sans-serif;
+    }
+    body {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    canvas {
+        border: 3px solid #333;
+        border-radius: 8px;
+        box-shadow: 0 0 30px rgba(0,0,0,0.7);
+        background: #e1e1e1;
+    }
+    #musicHint {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: #fff;
+        background: rgba(0,0,0,0.75);
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 16px;
+        display: none;
+        z-index: 100;
+    }
+</style>
+</head>
+<body>
+
+<!-- 🎵 МУЗЫКА -->
+<audio id="bgmusic" loop preload="auto">
+    <source src="gg.mp3" type="audio/mpeg">
+</audio>
+
+<canvas id="game" width="1000" height="1000"></canvas>
+<div id="musicHint">🎵 Нажми любую клавишу, чтобы включить музыку</div>
+
+<script>
+// ============================================================
+// НАСТРОЙКИ
+// ============================================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const WIDTH  = canvas.width;
+const HEIGHT = canvas.height;
+const FPS    = 60;
+const GROUND_LEVEL = 550;
+
+const PLAYER_SPEED = 7;
+const PLAYER_SIZE  = 70;
+
+const BULLET_SPEED = 15;
+const BULLET_W     = 40;
+const BULLET_H     = 20;
+
+const ENEMY_SIZE = 70;
+let enemySpeed = 5;
+
+const MAX_WAVES       = 5;
+const WAVE_BASE_TIME  = 10;
+const WAVE_TIME_STEP  = 2;
+const POINTS_PER_KILL = 10;
+const STATE_DELAY     = 3.0;
+
+// ============================================================
+// ЗАГРУЗКА КАРТИНОК
+// ============================================================
+const IMAGES = {
+    player: 'tow.png',   // персонаж
+    enemy:  'sk.png',    // скелет
+    bullet: 'ct.png',    // стрела
+    bg:     'rot.png',   // задний фон
+    win:    'win.png',   // победа
+};
+
+const img = {};
+for (const [key, src] of Object.entries(IMAGES)) {
+    img[key] = new Image();
+    img[key].src = src;
+    img[key].onload  = () => console.log('✅ Загружено:', src);
+    img[key].onerror = () => console.warn('⚠ Не найдено:', src);
+}
+
+// ============================================================
+// 🎵 МУЗЫКА
+// ============================================================
+const music = document.getElementById('bgmusic');
+const musicHint = document.getElementById('musicHint');
+music.volume = 0.5;
+
+function unlockMusic() {
+    music.play().then(() => {
+        musicHint.style.display = 'none';
+        document.removeEventListener('click', unlockMusic);
+        document.removeEventListener('keydown', unlockMusic);
+        document.removeEventListener('touchstart', unlockMusic);
+    }).catch(() => {});
+}
+
+// Пробуем автозапуск
+music.play().then(() => {
+    // Получилось — ничего не делаем
+}).catch(() => {
+    // Заблокировано — ждём действия пользователя
+    musicHint.style.display = 'block';
+    document.addEventListener('click', unlockMusic);
+    document.addEventListener('keydown', unlockMusic);
+    document.addEventListener('touchstart', unlockMusic);
+});
+
+// ============================================================
+// СОСТОЯНИЕ
+// ============================================================
+let player = { x: 100, y: 670 };
+let bullet = { x: 0, y: 0, active: false };
+let enemies = [];
+let score = 0;
+let wave = 1;
+let waveTime = WAVE_BASE_TIME;
+let waveTimer = WAVE_BASE_TIME * FPS;
+let gameState = "PLAY";
+let stateTimer = 0;
+const keys = {};
+
+function createEnemies() {
+    return [
+        { x: 400, y: 450, dir:  1 },
+        { x: 400, y: 250, dir:  1 },
+        { x: 400, y: 70,  dir:  1 },
+        { x: 650, y: 140, dir:  1 },
+        { x: 650, y: 350, dir:  1 },
+    ];
+}
+enemies = createEnemies();
+
+function getWaveTime(w) {
+    return Math.max(2, WAVE_BASE_TIME - (w - 1) * WAVE_TIME_STEP);
+}
+
+// ============================================================
+// УПРАВЛЕНИЕ
+// ============================================================
+document.addEventListener('keydown', e => {
+    keys[e.key] = true;
+
+    if (e.key === ' ' && !bullet.active && gameState === "PLAY") {
+        bullet.x = player.x + PLAYER_SIZE;
+        bullet.y = player.y + PLAYER_SIZE / 2 - BULLET_H / 2;
+        bullet.active = true;
+        e.preventDefault();
+    }
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+        e.preventDefault();
+    }
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ============================================================
+// ЛОГИКА
+// ============================================================
+function update() {
+    if (gameState === "PLAY") {
+        if (keys['ArrowLeft'])  player.x -= PLAYER_SPEED;
+        if (keys['ArrowRight']) player.x += PLAYER_SPEED;
+        if (keys['ArrowUp'])    player.y -= PLAYER_SPEED;
+        if (keys['ArrowDown'])  player.y += PLAYER_SPEED;
+
+        player.x = Math.max(0, Math.min(WIDTH - PLAYER_SIZE, player.x));
+        player.y = Math.max(0, Math.min(HEIGHT - PLAYER_SIZE, player.y));
+
+        if (bullet.active) {
+            bullet.x += BULLET_SPEED;
+            if (bullet.x > WIDTH) bullet.active = false;
+        }
+
+        for (let e of enemies) {
+            e.y += e.dir * enemySpeed;
+            if (e.y <= 0 || e.y >= GROUND_LEVEL) {
+                e.y = Math.max(0, Math.min(GROUND_LEVEL, e.y));
+                e.dir = -e.dir;
+            }
+        }
+
+        if (bullet.active) {
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const e = enemies[i];
+                if (bullet.x < e.x + ENEMY_SIZE &&
+                    bullet.x + BULLET_W > e.x &&
+                    bullet.y < e.y + ENEMY_SIZE &&
+                    bullet.y + BULLET_H > e.y) {
+                    enemies.splice(i, 1);
+                    bullet.active = false;
+                    score += POINTS_PER_KILL;
+                    break;
+                }
+            }
+        }
+
+        waveTimer--;
+
+        if (enemies.length === 0) {
+            if (wave >= MAX_WAVES) {
+                gameState = "WIN";
+                stateTimer = 0;
+            } else {
+                wave++;
+                waveTime = getWaveTime(wave);
+                waveTimer = waveTime * FPS;
+                enemies = createEnemies();
+                enemySpeed += 1;
+                bullet.active = false;
+            }
+        } else if (waveTimer <= 0) {
+            gameState = "LOSE";
+            stateTimer = 0;
+        }
+    }
+
+    if (gameState === "LOSE") stateTimer += 1 / FPS;
+}
+
+// ============================================================
+// РИСОВАНИЕ
+// ============================================================
+function draw() {
+    // ---------- ФОН rot.png ----------
+    if (img.bg.complete && img.bg.naturalWidth > 0) {
+        ctx.drawImage(img.bg, 0, 0, WIDTH, HEIGHT);
+    } else {
+        ctx.fillStyle = "#e1e1e1";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    }
+
+    // ---------- СКЕЛЕТЫ sk.png ----------
+    for (let e of enemies) {
+        if (img.enemy.complete && img.enemy.naturalWidth > 0) {
+            ctx.drawImage(img.enemy, e.x, e.y, ENEMY_SIZE, ENEMY_SIZE);
+        } else {
+            ctx.fillStyle = "#c0392b";
+            ctx.fillRect(e.x, e.y, ENEMY_SIZE, ENEMY_SIZE);
+        }
+    }
+
+    // ---------- ПЕРСОНАЖ tow.png ----------
+    if (img.player.complete && img.player.naturalWidth > 0) {
+        ctx.drawImage(img.player, player.x, player.y, PLAYER_SIZE, PLAYER_SIZE);
+    } else {
+        ctx.fillStyle = "#2980b9";
+        ctx.fillRect(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE);
+    }
+
+    // ---------- СТРЕЛА ct.png ----------
+    if (bullet.active) {
+        if (img.bullet.complete && img.bullet.naturalWidth > 0) {
+            ctx.drawImage(img.bullet, bullet.x, bullet.y, BULLET_W, BULLET_H);
+        } else {
+            ctx.fillStyle = "#f1c40f";
+            ctx.fillRect(bullet.x, bullet.y, BULLET_W, BULLET_H);
+        }
+    }
+
+    // ---------- HUD ----------
+    ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.fillRect(10, 10, 380, 90);
+    ctx.fillRect(WIDTH - 210, 10, 200, 60);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 32px Arial";
+    ctx.fillText("Очки: " + score, 25, 50);
+
+    ctx.font = "22px Arial";
+    ctx.fillText(`Волна: ${wave}/${MAX_WAVES}   Врагов: ${enemies.length}`, 25, 85);
+
+    const secondsLeft = Math.max(0, Math.ceil(waveTimer / FPS));
+    ctx.fillStyle = secondsLeft > 3 ? "#fff" : "#ff4040";
+    ctx.font = "bold 32px Arial";
+    const tText = `⏱ ${secondsLeft} сек`;
+    ctx.fillText(tText, WIDTH - ctx.measureText(tText).width - 25, 50);
+
+    // ---------- ПОБЕДА ----------
+    if (gameState === "WIN") {
+        ctx.fillStyle = "rgba(0,0,0,0.75)";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        if (img.win.complete && img.win.naturalWidth > 0) {
+            const w = 500, h = 500;
+            ctx.drawImage(img.win, WIDTH/2 - w/2, HEIGHT/2 - h/2 - 80, w, h);
+        }
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#000";
+        ctx.font = "bold 96px Arial";
+        ctx.fillText("ТЫ ВЫИГРАЛ!", WIDTH/2 + 4, HEIGHT/2 + 164);
+        ctx.fillStyle = "#ffd700";
+        ctx.fillText("ТЫ ВЫИГРАЛ!", WIDTH/2, HEIGHT/2 + 160);
+
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 36px Arial";
+        ctx.fillText("Итоговый счёт: " + score, WIDTH/2, HEIGHT/2 + 240);
+
+        ctx.fillStyle = "#ddd";
+        ctx.font = "22px Arial";
+        ctx.fillText("Обнови страницу, чтобы играть снова", WIDTH/2, HEIGHT/2 + 300);
+        ctx.textAlign = "start";
+    }
+
+    // ---------- ПОРАЖЕНИЕ ----------
+    if (gameState === "LOSE") {
+        ctx.fillStyle = "rgba(80,0,0,0.85)";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#000";
+        ctx.font = "bold 96px Arial";
+        ctx.fillText("ТЫ ПРОИГРАЛ!", WIDTH/2 + 4, HEIGHT/2 - 56);
+        ctx.fillStyle = "#ff3b3b";
+        ctx.fillText("ТЫ ПРОИГРАЛ!", WIDTH/2, HEIGHT/2 - 60);
+
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 36px Arial";
+        ctx.fillText("Итоговый счёт: " + score, WIDTH/2, HEIGHT/2 + 40);
+
+        ctx.fillStyle = "#eee";
+        ctx.font = "22px Arial";
+        const left = Math.max(0, Math.ceil(STATE_DELAY - stateTimer));
+        ctx.fillText(`Окно закроется через ${left} сек...`, WIDTH/2, HEIGHT/2 + 100);
+        ctx.fillText("(или обнови страницу, чтобы играть снова)", WIDTH/2, HEIGHT/2 + 140);
+        ctx.textAlign = "start";
+    }
+}
+
+// ============================================================
+// ИГРОВОЙ ЦИКЛ
+// ============================================================
+let lastTime = 0;
+const frameInterval = 1000 / FPS;
+
+function gameLoop(t) {
+    if (t - lastTime >= frameInterval) {
+        update();
+        draw();
+        lastTime = t;
+    }
+    requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
